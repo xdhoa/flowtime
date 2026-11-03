@@ -131,7 +131,7 @@ render.yaml            Optional Render deployment (gunicorn)
 
 ## Migrating an existing 2.x deployment
 
-- **Database:** run `supabase/migrations/001_public_requests.sql` once. It only adds things and changes no existing data. Do **not** re-run `schema.sql` on a live database.
+- **Database:** run `supabase/migrations/001_public_requests.sql`, then `002_decline_status.sql` (manager can decline/reopen requests). Both only add things, change no existing data, and are safe to re-run. Do **not** re-run `schema.sql` on a live database.
 - **Vercel project settings:** the old guide set Framework Preset *Other*, Build Command `npm run build`, and Output Directory `public`. Change the Framework Preset to **Flask** and clear the Build Command and Output Directory overrides, then redeploy. Environment variables stay the same.
 - The old Node files (`server.mjs`, `api/*.js`, `lib/`, `package.json`) were removed. Having `package.json` or `api/*.js` in the repo would make Vercel deploy Node functions again.
 

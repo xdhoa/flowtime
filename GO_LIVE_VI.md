@@ -34,7 +34,11 @@ Demo dùng được ngay. AI/email thật và nhiều người ở các máy kh�
 1. Đăng nhập https://supabase.com, tạo một project dành riêng cho Flowtime.
 2. Mở **SQL Editor → New query**.
 3. Mở file `supabase/schema.sql` trong VS Code, sao chép toàn bộ, chạy **một lần** trong SQL Editor. Script tạo bảng mới; không chạy lặp lại trên dữ liệu đang dùng.
-3b. Sau đó chạy `supabase/migrations/001_public_requests.sql` (New query → dán → Run). File này cho phép **gửi yêu cầu không cần đăng nhập**. Nếu bạn đã có cơ sở dữ liệu đang dùng, chỉ cần chạy file này: nó chỉ bổ sung, không xóa hay đổi dữ liệu cũ, và chạy lại nhiều lần vẫn an toàn.
+3b. Sau đó chạy lần lượt các file trong `supabase/migrations/` (New query → dán → Run):
+   - `001_public_requests.sql`: cho phép **gửi yêu cầu không cần đăng nhập**.
+   - `002_decline_status.sql`: cho phép quản lý **từ chối** yêu cầu (kèm lý do) và mở lại.
+
+   Nếu bạn đã có cơ sở dữ liệu đang dùng, chỉ cần chạy hai file này: chúng chỉ bổ sung, không xóa hay đổi dữ liệu cũ, và chạy lại nhiều lần vẫn an toàn.
 4. Trong phần API Keys/Project Settings, ghi lại:
    - Project URL → `SUPABASE_URL`.
    - Khóa anon/publishable → `SUPABASE_ANON_KEY`.
