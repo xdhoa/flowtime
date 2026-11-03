@@ -36,7 +36,14 @@ class FakeResponse:
 
 
 class FakeBackend:
-    """Stands in for Supabase Auth/REST, OpenAI and Resend."""
+    """Stands in for Supabase Auth/REST, OpenAI and Resend.
+
+    The single fake task belongs to MANAGER and was sent by REQUESTER. Modes pick who is signed in:
+      manager        -> MANAGER (owner)
+      requester      -> REQUESTER (signed-in sender, not the owner)
+      other-task     -> REQUESTER, but the task was sent by OTHER (no access)
+      other-manager  -> OTHER, a different manager (no access)
+    """
 
     def __init__(self):
         self.mode = "requester"
@@ -44,33 +51,51 @@ class FakeBackend:
         self.task_status = "new"
         self.guest_hash = None  # hash of the tracking token that "exists" in the fake DB
         self.guest_quota_ok = True
+        self.has_profile = True  # managers row exists for the signed-in user
+        self.taken_slugs = {"taken"}
+
+    def user_id(self):
+        return {"manager": MANAGER, "other-manager": OTHER}.get(self.mode, REQUESTER)
 
     def __call__(self, method, url, headers=None, data=None, timeout=None, **_):
         u = urlsplit(url)
         body = json.loads(data) if data else None
-        self.requests.append({"method": method, "path": u.path, "query": parse_qs(u.query), "body": body, "headers": headers or {}})
+        query = parse_qs(u.query)
+        self.requests.append({"method": method, "path": u.path, "query": query, "body": body, "headers": headers or {}})
         if u.path == "/auth/v1/user" and method == "GET":
-            uid = MANAGER if self.mode == "manager" else REQUESTER
             # Metadata tries to claim manager/admin; the server must ignore it.
-            return FakeResponse({"id": uid, "email": "person@example.com", "email_confirmed_at": "2026-01-01",
-                                 "user_metadata": {"name": "Test", "manager": True, "role": "admin"}})
+            return FakeResponse({"id": self.user_id(), "email": "person@example.com", "email_confirmed_at": "2026-01-01",
+                                 "user_metadata": {"name": "Ngọc Hòa", "manager": True, "role": "admin"}})
         if u.path.endswith("/rpc/consume_quota"):
             return FakeResponse(True)
         if u.path.endswith("/rpc/consume_guest_quota"):
             return FakeResponse(self.guest_quota_ok)
+        if u.path.endswith("/managers"):
+            if method == "POST":
+                if body["slug"] in self.taken_slugs:
+                    return FakeResponse({"code": "23505"}, 409)
+                return FakeResponse([body], 201)
+            if method == "PATCH":
+                if body["slug"] in self.taken_slugs:
+                    return FakeResponse({"code": "23505"}, 409)
+                return FakeResponse([])
+            if "slug" in query:
+                return FakeResponse([{"user_id": MANAGER, "slug": "hoa", "name": "Hòa"}] if query["slug"] == ["eq.hoa"] else [])
+            if "user_id" in query:
+                return FakeResponse([{"slug": "hoa", "name": "Hòa"}] if self.has_profile else [])
+            return FakeResponse([{"user_id": MANAGER, "email": "hoa@example.com"}])
         if u.path.endswith("/tasks"):
             if method == "POST":
                 return FakeResponse([{**body, "id": TASK_ID}], 201)
             if method == "PATCH":
                 return FakeResponse([])
-            query = parse_qs(u.query)
             if "guest_token_hash" in query:
                 if self.guest_hash and query["guest_token_hash"] == ["eq." + self.guest_hash]:
-                    return FakeResponse([{"id": TASK_ID, "requester_id": None, "requester_name": "Guest", "requester_email": "g@example.com",
+                    return FakeResponse([{"id": TASK_ID, "manager_id": MANAGER, "requester_id": None, "requester_name": "Guest", "requester_email": "g@example.com",
                                           "status": self.task_status, "title": "Guest task", "requested_deadline": "2026-11-05T10:00Z",
                                           "guest_token_hash": self.guest_hash, "result": "Done"}])
                 return FakeResponse([])
-            return FakeResponse([{"id": TASK_ID, "requester_id": OTHER if self.mode == "other-task" else REQUESTER,
+            return FakeResponse([{"id": TASK_ID, "manager_id": MANAGER, "requester_id": OTHER if self.mode == "other-task" else REQUESTER,
                                   "guest_token_hash": "should-never-leave-the-server",
                                   "requester_email": "person@example.com", "status": self.task_status, "title": "Proposal",
                                   "requested_deadline": "2026-11-05T10:00Z", "updated_at": "2026-11-01T00:00Z"}])

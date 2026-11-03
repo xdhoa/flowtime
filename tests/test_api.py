@@ -2,19 +2,52 @@
 
 import pytest
 
-from conftest import OTHER, REQUESTER, TASK_ID
+from conftest import MANAGER, OTHER, REQUESTER, TASK_ID
 from flowtime import http
 from flowtime.ai import ask_ai
 from flowtime.core import HttpError
 
 
-def test_requester_data_excludes_private_data_and_ignores_role_spoof(call, backend):
-    status, data = call("data")
+def test_data_is_scoped_to_own_workspace(call, backend):
+    status, data = call("data", mode="other-manager")
     assert status == 200
-    assert data["user"]["manager"] is False
-    assert data["plans"] == [] and data["sessions"] == []
-    assert any(r["query"].get("requester_id") == ["eq." + REQUESTER] for r in backend.hit("/tasks"))
-    assert not backend.hit("/plans") and not backend.hit("/sessions")
+    assert data["manager"] == {"slug": "hoa", "name": "Hòa"}
+    # Every read is filtered to the signed-in account; nothing is fetched unfiltered.
+    assert all(r["query"].get("manager_id") == ["eq." + OTHER] for r in backend.hit("/tasks"))
+    assert all(r["query"].get("manager_id") == ["eq." + OTHER] for r in backend.hit("/sessions"))
+    assert all(r["query"].get("tasks.manager_id") == ["eq." + OTHER] for r in backend.hit("/plans"))
+
+
+def test_first_sign_in_creates_manager_code(call, backend):
+    backend.has_profile = False
+    status, data = call("data", mode="manager")
+    assert status == 200
+    created = [r for r in backend.hit("/managers") if r["method"] == "POST"][-1]["body"]
+    assert created["slug"] == "ngoc-hoa" and created["user_id"] == MANAGER
+    assert data["manager"]["slug"] == "ngoc-hoa"
+
+
+def test_change_code(call, backend):
+    assert call("profile", method="POST", mode="manager", body={"slug": "hoa-2026"})[0] == 200
+    assert call("profile", method="POST", mode="manager", body={"slug": "taken"})[0] == 409
+    # Upper case is accepted and stored lower case.
+    status, data = call("profile", method="POST", mode="manager", body={"slug": "Hoa-Team"})
+    assert status == 200 and data["slug"] == "hoa-team"
+    for bad in ("ab", "hòa", "-hoa", "hoa team", "login", "a" * 41):
+        assert call("profile", method="POST", mode="manager", body={"slug": bad})[0] == 400
+
+
+@pytest.mark.parametrize("route", [f"tasks/{TASK_ID}/plan", f"tasks/{TASK_ID}/timer", f"tasks/{TASK_ID}/status",
+                                   f"tasks/{TASK_ID}/decline", f"tasks/{TASK_ID}/comment", f"tasks/{TASK_ID}/events"])
+def test_other_manager_cannot_touch_my_task(call, route):
+    status, _ = call(route, method="GET" if route.endswith("events") else "POST", mode="other-manager", body=None if route.endswith("events") else {})
+    assert status == 404
+
+
+def test_other_manager_cannot_estimate_my_task(call, backend, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-only")
+    status, _ = call("ai", method="POST", mode="other-manager", body={"mode": "estimate", "task_id": TASK_ID})
+    assert status == 404
 
 
 def test_manager_receives_private_plan_data(call):
@@ -30,20 +63,21 @@ def test_requester_cannot_access_another_users_task(call):
 
 
 @pytest.mark.parametrize("route", [f"tasks/{TASK_ID}/plan", f"tasks/{TASK_ID}/timer", f"tasks/{TASK_ID}/status",
-                                   f"tasks/{TASK_ID}/handoff", "settings", "ai"])
-def test_requester_cannot_use_manager_operations(call, route):
-    status, _ = call(route, method="POST", body={"mode": "advice"} if route == "ai" else {})
+                                   f"tasks/{TASK_ID}/handoff"])
+def test_signed_in_sender_cannot_manage_the_task(call, route):
+    # The sender can see the task (requester_id) but only the owning manager may change it.
+    status, _ = call(route, method="POST", body={})
     assert status == 403
 
 
 def test_task_creation_binds_identity_and_ignores_injected_fields(call):
     status, data = call("tasks", method="POST", body={
         "title": "Test", "requested_deadline": "2026-11-05T10:00Z",
-        "requester_id": OTHER, "status": "delivered", "private_notes": "x",
+        "requester_id": OTHER, "manager_id": OTHER, "status": "delivered", "private_notes": "x",
     })
     assert status == 201
     task = data["task"]
-    assert task["requester_id"] == REQUESTER
+    assert task["requester_id"] == REQUESTER and task["manager_id"] == REQUESTER
     assert task["status"] == "new"
     assert "private_notes" not in task
     assert task["requested_deadline"] == "2026-11-05T10:00:00.000Z"

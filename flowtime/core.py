@@ -103,12 +103,38 @@ def request_fields(b):
     }
 
 
+def owns(user, task):
+    """Every account is a manager; a task belongs to exactly one manager."""
+    return bool(task.get("manager_id")) and task.get("manager_id") == user["id"]
+
+
 def visible_task(user, task):
-    return user["manager"] or task.get("requester_id") == user["id"]
+    # The owning manager, or a signed-in requester who sent it.
+    return owns(user, task) or (task.get("requester_id") is not None and task.get("requester_id") == user["id"])
 
 
-def manager_only(user):
-    need(user["manager"], 403, "Chỉ tài khoản quản lý có quyền thực hiện.")
+def owner_only(user, task):
+    need(owns(user, task), 403, "Chỉ người quản lý nhận yêu cầu này có quyền thực hiện.")
+
+
+RESERVED_SLUGS = {"login", "track", "request", "admin", "api", "demo", "flowtime", "manager", "help"}
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$")
+
+
+def slugify(value):
+    """'Ngọc Hòa' -> 'ngoc-hoa'. Vietnamese letters are reduced to plain ASCII."""
+    import unicodedata
+    s = (value or "").replace("đ", "d").replace("Đ", "D")
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")[:40].strip("-")
+    return s
+
+
+def valid_slug(value):
+    s = text(value, 40, True).lower()
+    need(_SLUG_RE.match(s), 400, "Mã chỉ gồm chữ thường không dấu, số và dấu gạch ngang (3–40 ký tự).")
+    need(s not in RESERVED_SLUGS, 400, "Mã này đã được hệ thống dành riêng. Hãy chọn mã khác.")
+    return s
 
 
 def valid_timezone(name):

@@ -3,10 +3,30 @@ only the signed-in manager can manage work."""
 
 import pytest
 
-from conftest import TASK_ID
+from conftest import MANAGER, TASK_ID
 from flowtime.api import token_hash
 
-GOOD = {"name": "Lan", "email": "lan@example.com", "title": "Poster", "requested_deadline": "2026-11-05T10:00Z"}
+GOOD = {"name": "Lan", "email": "lan@example.com", "title": "Poster", "requested_deadline": "2026-11-05T10:00Z", "manager": "hoa"}
+
+
+def test_manager_lookup_by_code(client, backend):
+    status, data = post(client, "public/manager", {"slug": "HOA "})
+    assert status == 200 and data == {"slug": "hoa", "name": "Hòa"}
+    assert "user_id" not in data  # internal id never exposed
+    for bad in ({"slug": "nobody"}, {"slug": "x"}, {}):
+        assert post(client, "public/manager", bad)[0] == 404
+
+
+def test_request_goes_only_to_that_manager(client, backend):
+    status, data = post(client, "public/tasks", GOOD)
+    assert status == 201 and data["manager"] == "Hòa"
+    created = [r for r in backend.hit("/tasks") if r["method"] == "POST"][-1]["body"]
+    assert created["manager_id"] == MANAGER
+
+
+def test_request_needs_a_valid_manager_code(client, backend):
+    assert post(client, "public/tasks", {**GOOD, "manager": "nobody"})[0] == 404
+    assert post(client, "public/tasks", {k: v for k, v in GOOD.items() if k != "manager"})[0] == 404
 
 
 def post(client, route, body, origin=None):

@@ -17,12 +17,10 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
-      - key: FLOWTIME_MANAGER_ID
-        sync: false
       - key: APP_URL
         sync: false
-      - key: MANAGER_EMAIL
-        sync: false
+      - key: AI_DAILY_LIMIT
+        value: "300"
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_MODEL

@@ -2,17 +2,19 @@
 
 **Clear requests. Work in rhythm.** (UI: *Giao việc rõ ràng. Làm việc có nhịp.*)
 
-Flowtime is a two-role app for shared task requests and personal workload management. **Requesters** submit work and approve results. The **manager** reviews requests, commits to deadlines, schedules work, tracks actual time, and hands over results. AI helps draft requests, estimate effort, and suggest improvements. The manager must confirm every consequential change.
+Flowtime is a task-request and personal workload app for **many managers**. **Requesters** submit work to a manager and approve results. Each **manager** reviews requests, commits to deadlines, schedules work, tracks actual time, and hands over results. AI helps draft requests, estimate effort, and suggest improvements. The manager must confirm every consequential change.
 
-Version 3.0 moves the backend from Node.js to **Python + Flask**. The browser UI (`public/`) and the API contract are unchanged. The app no longer needs a Node.js server. Vietnamese step-by-step deployment guide: **[GO_LIVE_VI.md](GO_LIVE_VI.md)**.
+Version 3.0 moves the backend from Node.js to **Python + Flask**, and the app no longer needs a Node.js server. Vietnamese step-by-step deployment guide: **[GO_LIVE_VI.md](GO_LIVE_VI.md)**.
 
-## Who signs in
+## Who signs in, and how requests reach a manager
 
-- **Requesters do not need an account.** The home page is a public request form (name, email, request details). After submitting, the requester gets a private tracking link (`/#track=<token>`), which is also remembered on that device. With the link they can follow status, comment and approve the result. Anyone holding the link can see that one request, but nothing else.
-- **Only the manager signs in** (`/#login`) to accept, plan, time, report and hand over work.
-- Existing requester accounts keep working.
+- **Managers sign up themselves** (`/#login` → *Tạo tài khoản quản lý*) and confirm their email. Every account is a manager with a private workspace: their own requests, roadmap, timer, working hours and reports.
+- **Each manager gets a personal request link**, `/#request/<code>`, shown on their dashboard with a copy button. The code is created from the manager's name (e.g. `ngoc-hoa`) and can be changed under *Đổi mã*.
+- **Requesters need no account.** They open a manager's link, see "Gửi yêu cầu cho <name>", and submit with their name and email. The request goes only to that manager. Opening the bare app address asks for the manager's code.
+- After submitting, the requester gets a private tracking link (`/#track=<token>`), also remembered on that device. With it they can follow status, comment and approve the result. Anyone holding the link can see that one request, but nothing else.
 - Public submissions are protected by a hidden honeypot field and daily limits: 10 requests, 5 AI drafts and 100 comments per visitor, plus global caps of 300, 100 and 2000. Only a hash of the tracking token is stored.
-- Requires database migration [`supabase/migrations/001_public_requests.sql`](supabase/migrations/001_public_requests.sql). It is additive and safe to re-run.
+- Total AI calls across all managers are capped per day by `AI_DAILY_LIMIT` (default 300), so open sign-up cannot run up your OpenAI bill. To stop new sign-ups entirely, turn off *Allow new users to sign up* in Supabase Auth.
+- Database: run `schema.sql`, then the migrations in [`supabase/migrations/`](supabase/migrations/) in order (001, 002, 003). They are additive and safe to re-run.
 
 ## Architecture
 
@@ -59,7 +61,7 @@ Next time, you only need `.\.venv\Scripts\Activate.ps1` and then `python app.py`
 python -m pytest -q
 ```
 
-This runs 67 tests covering the public request flow, authorization, input validation, the scheduler, AI error handling, cron protection, and static file serving. If Node.js is installed, you can also test the browser modules (demo flow and the JS planner) with `node --test "tests/frontend/*.test.mjs"`. These tests are optional; Node is not used to run the app.
+This runs 84 tests covering manager isolation, the public request flow, authorization, input validation, the scheduler, AI error handling, cron protection, and static file serving. If Node.js is installed, you can also test the browser modules (demo flow and the JS planner) with `node --test "tests/frontend/*.test.mjs"`. These tests are optional; Node is not used to run the app.
 
 ## Configuration
 
@@ -68,12 +70,11 @@ This runs 67 tests covering the public request flow, authorization, input valida
 | `SUPABASE_URL` | Real use | Supabase project URL |
 | `SUPABASE_ANON_KEY` | Real use | Anon/publishable key (used for Auth calls) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Real use | Secret service-role key. Server only |
-| `FLOWTIME_MANAGER_ID` | Real use | Auth user UUID of the single manager |
 | `APP_URL` | Real use | Public base URL, e.g. `https://my-flowtime.vercel.app` |
 | `OPENAI_API_KEY` | AI | OpenAI API key |
 | `OPENAI_MODEL` | AI (default `gpt-4.1-mini`) | Any Responses model with Structured Outputs |
-| `RESEND_API_KEY`, `EMAIL_FROM` | Email | Handoff email + daily digest |
-| `MANAGER_EMAIL` | Digest | Who receives the daily deadline digest |
+| `AI_DAILY_LIMIT` | AI (default 300) | Total AI calls per day across all managers |
+| `RESEND_API_KEY`, `EMAIL_FROM` | Email | Handoff email + daily digest (sent to each manager's account email) |
 | `CRON_SECRET` | Digest | Random string, at least 32 characters |
 | `PORT` | Local only | Default 3000 |
 
@@ -81,14 +82,13 @@ Never commit `.env` or keys. `.gitignore` already excludes `.env` and `.venv/`.
 
 ## Security model
 
-- **Manager identity** comes only from `FLOWTIME_MANAGER_ID` (server configuration). Roles sent by the browser and user metadata are ignored. A test checks that a metadata claim of `manager: true` / `role: admin` is ignored.
-- **Every endpoint** verifies the Supabase access token on the server and checks the role before reading or writing data. Hiding a menu item is not treated as access control.
+- **Manager isolation:** every task has a `manager_id`. Every endpoint verifies the Supabase access token on the server, reads only rows belonging to the signed-in manager, and checks ownership before any change. Another manager guessing a task ID gets 404. Permissions never come from browser input or user metadata.
 - **Database:** RLS is enabled and the `anon`/`authenticated` roles have no table access. Only the server, using the service-role key, can reach the tables.
-- **Requesters** get only their own tasks. Plans, time logs, private notes, settings and workload analysis are never sent to them. Guessing another task's ID returns 404.
-- **Timer and status changes** run as PostgreSQL transactions (`timer_change`, `task_status`), so only one timer can run at a time, across tabs and devices.
+- **Requesters** (tracking-link holders) see only the shared brief, status, deadlines, result and discussion. Plans, time logs, private notes, settings and workload analysis are never sent to them.
+- **Timer, status and decline changes** run as PostgreSQL transactions (`timer_change`, `task_status`, `task_decline`) that also check `manager_id`, so each manager has one running timer at a time, across tabs and devices, and can only affect their own tasks.
 - **Cross-site POSTs** are blocked: the `Origin` header must match `APP_URL` or the request's own host. `/api/cron` rejects requests without the correct `CRON_SECRET`.
 - **AI output is advisory.** Plans change only when the manager explicitly submits them. The AI prompt treats request text as untrusted data.
-- **Per-user daily quotas** (UTC days) are enforced in the database: 15 AI calls per requester, 50 for the manager, 50 requests, 200 comments, 50 handoff emails.
+- **Per-account daily quotas** (UTC days) are enforced in the database: 50 AI calls, 50 requests, 200 comments, 50 handoff emails, plus the global `AI_DAILY_LIMIT`.
 
 ## API (unchanged from 2.x)
 

@@ -54,16 +54,56 @@ function shell(content) {
   window.scrollTo({top: 0});
 }
 
+// Routes: '#track=<token>' follow a request · '#request/<code>' send to that manager · otherwise ask for the code.
 export function showGuest(hash = '') {
   const token = hash.startsWith('#track=') ? hash.slice(7) : '';
   if (token) return renderTrack(token);
-  renderIntake();
+  const code = hash.startsWith('#request/') ? decodeURIComponent(hash.slice(9)).trim().toLowerCase() : '';
+  if (code) return openManager(code);
+  renderCodeEntry();
 }
 
-function renderIntake() {
+function savedHTML(saved) {
+  return saved.length
+    ? saved.map(x => `<div class="list-row"><span>${esc(x.title)}<br><small class="caption">${x.manager ? 'Gửi cho ' + esc(x.manager) + ' · ' : ''}${fmt(x.created_at)}</small></span><a href="#track=${esc(x.token)}">Theo dõi →</a></div>`).join('') + '<button type="button" class="link" id="gForget">Xóa danh sách khỏi thiết bị này</button>'
+    : '<p class="help">Chưa có. Đường dẫn theo dõi được lưu tại đây sau khi bạn gửi. Hãy tự lưu lại đường dẫn nếu dùng máy khác.</p>';
+}
+
+function bindForget(rerender) {
+  if ($('gForget')) $('gForget').onclick = () => { writeSaved(readSaved().filter(x => !!x.demo !== isDemo())); rerender(); };
+}
+
+function renderCodeEntry(error = '') {
+  shell(`<section class="page-heading"><div><span class="eyebrow">A CLEAR BRIEF, A BETTER START</span><h1>Gửi yêu cầu cho người quản lý</h1><p>Mỗi người quản lý có một đường link riêng để nhận việc. Nếu bạn chỉ có mã, hãy nhập mã bên dưới. Không cần tài khoản.</p></div></section>
+  ${error ? `<div class="errorbox">${esc(error)}</div>` : ''}
+  <div class="intake-grid">
+    <section class="panel"><div class="panel-head"><h2>Nhập mã người quản lý</h2></div>
+      <form id="gCodeForm" class="panel-body"><label for="gCode">Mã (ví dụ: ngoc-hoa)</label><input id="gCode" required maxlength="40" autocomplete="off" autocapitalize="none" spellcheck="false">
+      ${isDemo() ? '<p class="help">Demo: dùng mã <b>demo</b>.</p>' : '<p class="help">Mã là phần cuối của link người quản lý gửi cho bạn, sau <b>#request/</b>.</p>'}
+      <button class="primary full" type="submit">Tiếp tục →</button></form></section>
+    <div class="stack">
+      <section class="panel"><div class="panel-head"><h2>Yêu cầu bạn đã gửi trên thiết bị này</h2></div><div class="panel-body">${savedHTML(mySaved())}</div></section>
+      <section class="panel"><div class="panel-body"><h3>Bạn là người quản lý?</h3><p class="help">Tạo tài khoản để có link nhận việc riêng, dashboard, roadmap và bấm giờ.</p><a class="primary-link" href="#login">Đăng nhập / Tạo tài khoản →</a></div></section>
+    </div>
+  </div>`);
+  $('gCodeForm').onsubmit = e => { e.preventDefault(); location.hash = '#request/' + encodeURIComponent($('gCode').value.trim().toLowerCase()); };
+  bindForget(() => renderCodeEntry());
+}
+
+async function openManager(code) {
+  shell('<div class="loading">Đang mở biểu mẫu…</div>');
+  try {
+    const manager = await call('public/manager', {slug: code});
+    renderIntake(manager);
+  } catch (e) {
+    renderCodeEntry(e.message);
+  }
+}
+
+function renderIntake(manager) {
   const saved = mySaved();
   const aiReady = ctx.config.ai && !isDemo();
-  shell(`<section class="page-heading"><div><span class="eyebrow">A CLEAR BRIEF, A BETTER START</span><h1>Bạn cần hỗ trợ việc gì?</h1><p>Gửi yêu cầu không cần tài khoản. Sau khi gửi, bạn nhận một đường dẫn riêng để theo dõi tiến độ, trao đổi và duyệt kết quả.</p></div></section>
+  shell(`<section class="page-heading"><div><span class="eyebrow">A CLEAR BRIEF, A BETTER START</span><h1>Gửi yêu cầu cho ${esc(manager.name)}</h1><p>Không cần tài khoản. Sau khi gửi, bạn nhận một đường dẫn riêng để theo dõi tiến độ, trao đổi và duyệt kết quả.</p></div><a href="#request">Không phải người này?</a></section>
   <div class="intake-grid">
     <section class="panel"><div class="panel-head"><h2>Thông tin yêu cầu</h2><span class="badge">Bạn xác nhận trước khi gửi</span></div>
       <form id="guestForm" class="panel-body">
@@ -87,10 +127,7 @@ function renderIntake() {
         <p class="help">Chỉ nội dung bạn nhập ở đây được gửi cho AI. Không gửi tài liệu bí mật nếu chưa được phép.</p>`
         : '<p class="help">Bạn có thể điền trực tiếp biểu mẫu bên cạnh.</p>'}
       </div></section>
-      <section class="panel"><div class="panel-head"><h2>Yêu cầu bạn đã gửi trên thiết bị này</h2></div><div class="panel-body">
-        ${saved.length ? saved.map(x => `<div class="list-row"><span>${esc(x.title)}<br><small class="caption">${fmt(x.created_at)}</small></span><a href="#track=${esc(x.token)}">Theo dõi →</a></div>`).join('') + '<button type="button" class="link" id="gForget">Xóa danh sách khỏi thiết bị này</button>'
-        : '<p class="help">Chưa có. Đường dẫn theo dõi được lưu tại đây sau khi bạn gửi. Hãy tự lưu lại đường dẫn nếu dùng máy khác.</p>'}
-      </div></section>
+      <section class="panel"><div class="panel-head"><h2>Yêu cầu bạn đã gửi trên thiết bị này</h2></div><div class="panel-body">${savedHTML(saved)}</div></section>
     </div>
   </div>`);
   $('gDeadline').value = '';
@@ -101,15 +138,15 @@ function renderIntake() {
         name: $('gName').value.trim(), email: $('gEmail').value.trim(), website: $('gWebsite').value,
         title: $('gTitle').value.trim(), description: $('gDescription').value, deliverable: $('gDeliverable').value,
         requested_deadline: new Date($('gDeadline').value).toISOString(), category: $('gCategory').value,
-        collaborators: $('gCollab').value, attachment_url: $('gAttachment').value,
+        collaborators: $('gCollab').value, attachment_url: $('gAttachment').value, manager: manager.slug,
       };
       const r = await call('public/tasks', payload);
-      writeSaved([{token: r.token, title: r.task.title, created_at: new Date().toISOString(), demo: isDemo()}, ...readSaved()]);
+      writeSaved([{token: r.token, title: r.task.title, manager: r.manager, created_at: new Date().toISOString(), demo: isDemo()}, ...readSaved()]);
       chat = [];
-      renderSent(r.token, r.task.title);
+      renderSent(r.token, r.task.title, r.manager);
     });
   };
-  if ($('gForget')) $('gForget').onclick = () => { writeSaved(readSaved().filter(x => !!x.demo !== isDemo())); renderIntake(); };
+  bindForget(() => renderIntake(manager));
   if ($('gChatForm')) $('gChatForm').onsubmit = e => {
     e.preventDefault();
     perform(e.submitter, async () => {
@@ -130,15 +167,17 @@ function renderIntake() {
   };
 }
 
-function renderSent(token, title) {
+function renderSent(token, title, managerName) {
   const link = trackLink(token);
-  shell(`<section class="page-heading"><div><span class="eyebrow">REQUEST SENT</span><h1>Đã gửi yêu cầu ✓</h1><p>“${esc(title)}” đã đến quản lý. Quản lý sẽ xem xét và xác nhận deadline.</p></div></section>
+  shell(`<section class="page-heading"><div><span class="eyebrow">REQUEST SENT</span><h1>Đã gửi yêu cầu ✓</h1><p>“${esc(title)}” đã đến ${esc(managerName || 'người quản lý')}. Họ sẽ xem xét và xác nhận deadline.</p></div></section>
   <section class="panel"><div class="panel-body">
     <h3>Đường dẫn theo dõi riêng của bạn</h3>
     <p class="help">Lưu lại đường dẫn này để xem tiến độ, trao đổi và duyệt kết quả. Ai có đường dẫn đều xem được yêu cầu, vì vậy chỉ chia sẻ với người liên quan. Đường dẫn cũng được lưu trên trình duyệt này.</p>
     <div class="track-link"><input id="gLink" readonly value="${esc(link)}" aria-label="Đường dẫn theo dõi"><button id="gCopy" type="button">Sao chép</button></div>
-    <div class="actions"><a class="primary-link" href="#track=${esc(token)}">Mở trang theo dõi →</a><a href="#request">Gửi yêu cầu khác</a></div>
+    <div class="actions"><a class="primary-link" href="#track=${esc(token)}">Mở trang theo dõi →</a><a href="${esc(location.hash || '#request')}" id="gAnother">Gửi yêu cầu khác</a></div>
   </div></section>`);
+  // The address is unchanged after submitting, so clicking a same-address link would do nothing.
+  $('gAnother').onclick = e => { e.preventDefault(); showGuest(location.hash); };
   $('gCopy').onclick = e => perform(e.currentTarget, async () => { await navigator.clipboard.writeText(link); ctx.toast('Đã sao chép đường dẫn.'); });
 }
 

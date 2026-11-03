@@ -48,27 +48,42 @@ def send_mail(key, to, subject, body):
 
 
 def digest():
-    """Daily email to the manager: overdue work and work due within 24 hours."""
-    need(os.environ.get("MANAGER_EMAIL"), 503, "Chưa có MANAGER_EMAIL.")
+    """Daily email to EACH manager: their own overdue work and work due within 24 hours."""
     now = time.time() * 1000
     limit = now + 86_400_000
     tasks = db(
-        "tasks?status=not.in.(review,delivered,declined)&requested_deadline=not.is.null"
-        "&select=id,title,requested_deadline,committed_deadline,status&order=requested_deadline.asc&limit=1000"
+        "tasks?status=not.in.(review,delivered,declined)&manager_id=not.is.null"
+        "&select=id,title,requested_deadline,committed_deadline,status,manager_id&order=requested_deadline.asc&limit=5000"
     ) or []
-    due = [t for t in tasks if to_ms(t.get("committed_deadline") or t["requested_deadline"]) <= limit]
-    if not due:
-        return {"sent": False, "count": 0}
-    lines = []
-    for t in due:
-        deadline = t.get("committed_deadline") or t["requested_deadline"]
-        label = "QUÁ HẠN" if to_ms(deadline) < now else "SẮP HẠN"
-        lines.append(f"{label}: {t['title']} — {vi_datetime(deadline)}")
+    due_by_manager = {}
+    for t in tasks:
+        if to_ms(t.get("committed_deadline") or t["requested_deadline"]) <= limit:
+            due_by_manager.setdefault(t["manager_id"], []).append(t)
+    if not due_by_manager:
+        return {"sent": 0, "managers": 0, "count": 0}
+    managers = {m["user_id"]: m for m in (db("managers?select=user_id,email") or [])}
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    result = send_mail(
-        key="digest:" + today,
-        to=os.environ["MANAGER_EMAIL"],
-        subject=f"Flowtime: {len(due)} công việc cần chú ý",
-        body="\n".join(lines) + "\n\nMở dashboard: " + os.environ.get("APP_URL", ""),
-    )
-    return {**result, "count": len(due)}
+    sent = failed = 0
+    for manager_id, due in due_by_manager.items():
+        email = (managers.get(manager_id) or {}).get("email")
+        if not email:
+            continue
+        lines = []
+        for t in due:
+            deadline = t.get("committed_deadline") or t["requested_deadline"]
+            label = "QUÁ HẠN" if to_ms(deadline) < now else "SẮP HẠN"
+            lines.append(f"{label}: {t['title']} — {vi_datetime(deadline)}")
+        try:
+            send_mail(
+                key=f"digest:{today}:{manager_id}",
+                to=email,
+                subject=f"Flowtime: {len(due)} công việc cần chú ý",
+                body="\n".join(lines) + "\n\nMở dashboard: " + os.environ.get("APP_URL", ""),
+            )
+            sent += 1
+        except HttpError as e:
+            if e.status == 503:  # email not configured at all: report once
+                raise
+            failed += 1  # one bad address must not stop the others
+    return {"sent": sent, "failed": failed, "managers": len(due_by_manager),
+            "count": sum(len(v) for v in due_by_manager.values())}

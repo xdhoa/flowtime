@@ -37,16 +37,17 @@ Demo dùng được ngay. AI/email thật và nhiều người ở các máy kh�
 3b. Sau đó chạy lần lượt các file trong `supabase/migrations/` (New query → dán → Run):
    - `001_public_requests.sql`: cho phép **gửi yêu cầu không cần đăng nhập**.
    - `002_decline_status.sql`: cho phép quản lý **từ chối** yêu cầu (kèm lý do) và mở lại.
+   - `003_multi_manager.sql`: **nhiều người quản lý**, mỗi người có link nhận việc riêng.
 
-   Nếu bạn đã có cơ sở dữ liệu đang dùng, chỉ cần chạy hai file này: chúng chỉ bổ sung, không xóa hay đổi dữ liệu cũ, và chạy lại nhiều lần vẫn an toàn.
+   Nếu bạn đã có cơ sở dữ liệu đang dùng, chỉ cần chạy các file này: chúng chỉ bổ sung, không xóa hay đổi dữ liệu cũ, và chạy lại nhiều lần vẫn an toàn.
 4. Trong phần API Keys/Project Settings, ghi lại:
    - Project URL → `SUPABASE_URL`.
    - Khóa anon/publishable → `SUPABASE_ANON_KEY`.
    - Khóa **service_role** bí mật → `SUPABASE_SERVICE_ROLE_KEY`. Không để khóa này vào `public/`, ảnh chụp hay repo.
-5. Trong **Authentication → Providers → Email**, bật email/password và xác nhận email.
-6. Tạo tài khoản quản lý tại **Authentication → Users → Add user/Create new user**. Chỉ bật tự xác nhận khi tạo chính tài khoản của bạn bằng giao diện quản trị tin cậy. Chọn mật khẩu mạnh.
-7. Sao chép **User UID/UUID** của bạn, dùng cho `FLOWTIME_MANAGER_ID`.
-8. Cấu hình SMTP cho email xác nhận/đặt lại mật khẩu khi chia sẻ cho người dùng thật. Dịch vụ email Auth này tách biệt với email bàn giao qua Resend.
+5. Trong **Authentication → Providers → Email**, bật email/password và **bật xác nhận email** (Confirm email). Người quản lý mới phải xác nhận email trước khi dùng được app.
+6. Không cần tạo tài khoản trong Supabase: **mỗi người quản lý tự tạo tài khoản trong app** (trang đăng nhập → **Tạo tài khoản quản lý**). Sau khi xác nhận email và đăng nhập, dashboard hiện **link nhận yêu cầu riêng** để gửi cho người giao việc.
+7. Cấu hình SMTP cho email xác nhận/đặt lại mật khẩu khi chia sẻ cho người dùng thật (email mặc định của Supabase chỉ gửi được vài email mỗi giờ). Dịch vụ email Auth này tách biệt với email bàn giao qua Resend.
+8. Nếu sau này muốn **khóa đăng ký mới**: Authentication → Sign In / Providers → tắt **Allow new users to sign up**. Người quản lý đã có tài khoản vẫn dùng bình thường.
 
 Các bảng đã bật RLS và không cấp quyền truy cập trực tiếp cho anon/authenticated. Mọi thao tác dữ liệu đi qua API máy chủ, xác minh token người dùng với Supabase Auth trước. Không thêm policy công khai để “sửa” lỗi quyền.
 
@@ -87,10 +88,10 @@ Nếu dùng giao diện upload: upload **nội dung bên trong** `flowtime-githu
 | `SUPABASE_URL` | Project URL |
 | `SUPABASE_ANON_KEY` | Khóa anon/publishable |
 | `SUPABASE_SERVICE_ROLE_KEY` | Khóa service_role bí mật |
-| `FLOWTIME_MANAGER_ID` | UUID tài khoản của bạn |
 | `APP_URL` | URL Vercel dự kiến của dự án, sau đó sửa đúng URL được cấp |
 | `OPENAI_API_KEY` | Khóa OpenAI API của bạn |
 | `OPENAI_MODEL` | `gpt-4.1-mini`, hoặc model tương thích trong tài khoản |
+| `AI_DAILY_LIMIT` | Tổng số lượt AI mỗi ngày cho **tất cả** người quản lý, ví dụ `300` (bảo vệ chi phí OpenAI) |
 
 9. Bấm **Deploy**. Nếu chưa biết chính xác URL trước lần deploy đầu, cập nhật `APP_URL` ngay sau đó và **Redeploy** trước khi cho người khác đăng nhập.
 10. URL mặc định dạng `https://ten-du-an.vercel.app`, không có chữ chatgpt. Tên thực tế phụ thuộc tính khả dụng và tài khoản của bạn.
@@ -109,14 +110,15 @@ Trong Supabase **Authentication → URL Configuration**:
 
 Thử:
 
-1. Đăng nhập email của bạn (trang `/#login`, hoặc bấm **Quản lý đăng nhập**) → phải hiện dashboard **Quản lý**.
-2. Mở tab ẩn danh, vào địa chỉ app (không đăng nhập) → gửi một yêu cầu → nhận **đường dẫn theo dõi**.
+1. Vào `/#login` → **Tạo tài khoản quản lý** → mở email xác nhận → đăng nhập → dashboard hiện ô **Link nhận yêu cầu của bạn**.
+2. Bấm **Sao chép link**, mở link đó ở tab ẩn danh (không đăng nhập) → trang ghi “Gửi yêu cầu cho <tên bạn>” → gửi một yêu cầu → nhận **đường dẫn theo dõi**.
 3. Bạn tải lại dashboard → phải thấy việc vừa gửi.
-4. Mở đường dẫn theo dõi ở tab ẩn danh → thấy trạng thái và trao đổi, **không** thấy thời lượng, ghi chú riêng hay việc khác.
-5. Đổi một ký tự trong đường dẫn theo dõi → phải báo đường dẫn không hợp lệ.
-6. Thử Quên mật khẩu → email → đặt mật khẩu mới.
+4. Tạo **tài khoản quản lý thứ hai** (email khác) → dashboard của tài khoản này **không** thấy việc của bạn.
+5. Mở đường dẫn theo dõi ở tab ẩn danh → thấy trạng thái và trao đổi, **không** thấy thời lượng, ghi chú riêng hay việc khác.
+6. Đổi một ký tự trong đường dẫn theo dõi → phải báo đường dẫn không hợp lệ.
+7. Thử Quên mật khẩu → email → đặt mật khẩu mới.
 
-**Gửi đường link cho người giao việc:** chỉ cần gửi địa chỉ app (ví dụ `https://ten-du-an.vercel.app`). Họ không cần tạo tài khoản. Nếu họ làm mất đường dẫn theo dõi, bạn vẫn trao đổi và bàn giao qua email như bình thường.
+**Gửi link cho người giao việc:** mỗi người quản lý gửi **link riêng** của mình (dạng `https://ten-du-an.vercel.app/#request/ma-cua-ban`). Người giao việc không cần tài khoản. Nếu họ chỉ mở địa chỉ app, trang sẽ hỏi **mã người quản lý** (phần cuối link). Có thể đổi mã trong dashboard (**Đổi mã**); link cũ sẽ ngừng hoạt động.
 
 App tự kiểm tra phiên khoảng mỗi phút khi người dùng không đang nhập form hoặc mở hộp thoại. Có nút ↻ để tải lại ngay.
 
@@ -140,8 +142,9 @@ Nếu chưa cần email tự động, có thể bỏ bước này và dùng sao 
 3. Thêm vào Vercel:
    - `RESEND_API_KEY`.
    - `EMAIL_FROM`, ví dụ `Flowtime <notifications@yourdomain.com>`.
-   - `MANAGER_EMAIL`: email nhận nhắc hạn của bạn.
    - `CRON_SECRET`: chuỗi ngẫu nhiên dài ít nhất 32 ký tự.
+
+   Email nhắc hạn được gửi tới **email tài khoản của từng người quản lý**, mỗi người chỉ nhận việc của mình.
 4. Tạo secret trong terminal nếu cần:
 
 ```powershell
@@ -195,6 +198,7 @@ Mua tên miền không bắt buộc. Bạn có thể dùng địa chỉ `vercel.
 | `python` không được nhận ra trên Windows | Cài lại Python và đánh dấu “Add python.exe to PATH”, mở lại VS Code |
 | Lỗi `ModuleNotFoundError: flask` | Chưa kích hoạt `.venv` hoặc chưa chạy `pip install -r requirements-dev.txt` |
 | Không gửi được bàn giao | Tên miền Resend đã xác minh, EMAIL_FROM đúng, khóa hợp lệ |
-| Không có nhắc khi đóng app | Cron production đã bật, CRON_SECRET/MANAGER_EMAIL đã đặt, log cron |
+| Không có nhắc khi đóng app | Cron production đã bật, CRON_SECRET/RESEND_API_KEY/EMAIL_FROM đã đặt, log cron |
+| Người giao việc báo “Không tìm thấy người quản lý” | Kiểm tra mã trong link khớp với mã ở dashboard; nếu vừa đổi mã, gửi lại link mới |
 
 Bộ mã chưa tự tạo tài khoản dịch vụ, chưa đẩy vào GitHub của bạn và chưa deploy Vercel. Bạn có toàn bộ source để triển khai theo tài khoản/tên miền của mình.

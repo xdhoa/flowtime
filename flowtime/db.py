@@ -11,10 +11,7 @@ log = logging.getLogger("flowtime")
 
 
 def configured():
-    return all(
-        os.environ.get(k)
-        for k in ("SUPABASE_URL", "SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY", "FLOWTIME_MANAGER_ID")
-    )
+    return all(os.environ.get(k) for k in ("SUPABASE_URL", "SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY"))
 
 
 def _json(response):
@@ -61,7 +58,8 @@ def all_rows(path):
 
 
 def auth_user(authorization):
-    """Verify the bearer token with Supabase Auth. Manager role comes ONLY from FLOWTIME_MANAGER_ID."""
+    """Verify the bearer token with Supabase Auth. Every confirmed account is a manager of its OWN
+    workspace; access to any task is decided by tasks.manager_id, never by metadata from the browser."""
     need(configured(), 503, "Chưa cấu hình chế độ dùng thật.")
     need(isinstance(authorization, str) and authorization.startswith("Bearer "), 401, "Hãy đăng nhập.")
     r = http.send(
@@ -78,8 +76,41 @@ def auth_user(authorization):
         "id": u["id"],
         "email": u.get("email"),
         "name": meta.get("name") or u.get("email"),
-        "manager": u["id"] == os.environ["FLOWTIME_MANAGER_ID"],
+        "manager": True,
     }
+
+
+def ensure_manager(user):
+    """Return the manager profile {slug, name}, creating it with a unique code on first sign-in."""
+    import secrets
+    from .core import RESERVED_SLUGS, slugify
+
+    rows = db(f"managers?user_id=eq.{user['id']}&select=slug,name") or []
+    if rows:
+        return rows[0]
+    base = slugify(user.get("name")) or slugify((user.get("email") or "").split("@")[0])
+    if len(base) < 3 or base in RESERVED_SLUGS:
+        base = (base + "-ql").strip("-") if base else "quan-ly"
+    for attempt in range(6):
+        slug = base if attempt == 0 else f"{base[:34]}-{secrets.randbelow(9000) + 1000}"
+        try:
+            created = db("managers", method="POST", body={
+                "user_id": user["id"], "slug": slug, "name": user.get("name") or "", "email": user.get("email") or "",
+            })
+            return {"slug": created[0]["slug"], "name": created[0]["name"]}
+        except HttpError as e:
+            if e.status != 409:
+                raise
+            rows = db(f"managers?user_id=eq.{user['id']}&select=slug,name") or []
+            if rows:  # created concurrently by another request
+                return rows[0]
+    raise HttpError(409, "Không tạo được mã người quản lý. Hãy thử lại.")
+
+
+def global_quota(kind, limit):
+    """Overall daily cap across all accounts (e.g. total AI calls), so open sign-up cannot run up costs."""
+    allowed = db("rpc/consume_guest_quota", method="POST", body={"p_key": "all", "p_kind": kind, "p_limit": limit})
+    need(allowed is True, 429, "Hệ thống đã đạt giới hạn sử dụng AI hôm nay. Vui lòng thử lại vào ngày mai.")
 
 
 def quota(user, kind, limit):

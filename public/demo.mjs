@@ -4,7 +4,8 @@ export function seed(){let user={id:'demo-manager',email:'manager@example.com',n
 let state;export function loadDemo(){try{state=JSON.parse(localStorage.getItem(KEY))||seed()}catch{state=seed()}return state}
 export function resetDemo(){state=seed();persist()};function persist(){localStorage.setItem(KEY,JSON.stringify(state))}
 export async function demoAPI(path,body,manager=true){if(!state)loadDemo();let user=manager?state.user:state.requester;let bits=path.split('/'),task=state.tasks.find(t=>t.id===bits[1]),action=bits[2];const ev=body=>state.events.push({id:uid(),task_id:task.id,actor_id:user.id,actor_name:user.name,body,created_at:new Date().toISOString()});function stop(id){state.sessions.filter(s=>!s.ended_at&&(!id||s.task_id===id)).forEach(s=>s.ended_at=new Date().toISOString())}
-if(path==='data')return structuredClone({user,tasks:manager?state.tasks:state.tasks.filter(t=>t.requester_id===user.id),plans:manager?state.plans:[],sessions:manager?state.sessions:[],settings:state.settings});
+if(path==='profile'){if(!/^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/.test(body?.slug||''))throw Error('Mã chỉ gồm chữ thường không dấu, số và dấu gạch ngang (3–40 ký tự).');state.user.slug=body.slug;persist();return {ok:true,slug:body.slug}}
+if(path==='data')return structuredClone({user,manager:manager?{slug:state.user.slug||'demo',name:state.user.name}:null,tasks:manager?state.tasks:state.tasks.filter(t=>t.requester_id===user.id),plans:manager?state.plans:[],sessions:manager?state.sessions:[],settings:state.settings});
 if(path==='ai')throw Error('La bàn AI chưa được kết nối trong demo. Cấu hình OPENAI_API_KEY để dùng AI thật.');
 if(path==='settings'){state.settings=body;persist();return {ok:true}};
 if(path==='tasks'){task={...body,id:uid(),requester_id:user.id,requester_name:user.name,requester_email:user.email,status:'new',committed_deadline:null,result:'',created_at:new Date().toISOString(),updated_at:new Date().toISOString()};state.tasks.unshift(task);ev('Đã gửi yêu cầu mới.');persist();return {task}}
@@ -26,7 +27,14 @@ export async function demoGuestAPI(path, body = {}) {
   state.guestTokens ??= {};
   const now = new Date().toISOString();
   if (path === 'public/ai') throw Error('AI chưa được kết nối trong demo. Hãy điền biểu mẫu trực tiếp.');
+  const slug = state.user.slug || 'demo';
+  const noManager = 'Không tìm thấy người quản lý với mã này. Trong demo, hãy dùng mã: ' + slug;
+  if (path === 'public/manager') {
+    if ((body.slug || '').trim().toLowerCase() !== slug) throw Error(noManager);
+    return {slug, name: state.user.name};
+  }
   if (path === 'public/tasks') {
+    if ((body.manager || '').trim().toLowerCase() !== slug) throw Error(noManager);
     const token = (uid() + uid()).replaceAll('-', '');
     const task = {id: uid(), requester_id: null, requester_name: body.name, requester_email: body.email, title: body.title,
       description: body.description || '', deliverable: body.deliverable || '', category: body.category || 'Khác',
@@ -36,7 +44,7 @@ export async function demoGuestAPI(path, body = {}) {
     state.guestTokens[token] = task.id;
     state.events.push({id: uid(), task_id: task.id, actor_id: null, actor_name: body.name, body: 'Đã gửi yêu cầu mới (không đăng nhập).', created_at: now});
     persist();
-    return {task: {id: task.id, title: task.title}, token};
+    return {task: {id: task.id, title: task.title}, token, manager: state.user.name};
   }
   const task = state.tasks.find(t => t.id === state.guestTokens[body.token]);
   if (!task) throw Error('Đường dẫn theo dõi không hợp lệ hoặc đã hết hiệu lực.');

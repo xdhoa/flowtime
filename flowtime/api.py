@@ -1,13 +1,15 @@
-"""JSON API. Contract is unchanged from the Node version so public/app.js keeps working:
+"""JSON API (contract used by public/app.js and public/guest.mjs):
 
     GET  /api/index?route=config | data | tasks/<id>/events
-    POST /api/index?route=tasks | settings | ai | auth/<op> | tasks/<id>/<action>
-    POST /api/index?route=public/tasks | public/track | public/comment | public/accept | public/ai
+    POST /api/index?route=tasks | settings | profile | ai | auth/<op> | tasks/<id>/<action>
+    POST /api/index?route=public/manager | public/tasks | public/track | public/comment | public/accept | public/ai
     GET  /api/cron  (Authorization: Bearer <CRON_SECRET>)
 
-Every signed-in route authenticates on the server and checks the role before touching data.
-public/* routes need no account: a request is submitted with a name and email, and afterwards
-only the holder of its secret tracking token can read it, comment or approve the result.
+Multi-manager model: every confirmed account is a manager with a private workspace and a public
+request code (slug). Requesters need no account: they submit through a manager's link
+(#request/<slug>) and follow their request with a secret tracking token.
+Every signed-in route verifies the token on the server, and every task action checks that the task
+belongs to the signed-in manager (tasks.manager_id).
 """
 
 import hashlib
@@ -25,10 +27,10 @@ from flask import Blueprint, jsonify, request
 from . import VERSION, http
 from .ai import ask_ai
 from .core import (
-    HttpError, is_uuid, manager_only, need, number, request_fields, text, timestamp,
-    to_iso, validate_settings, vi_datetime, visible_task,
+    HttpError, is_uuid, need, number, owner_only, owns, request_fields, text, timestamp,
+    to_iso, valid_slug, validate_settings, vi_datetime, visible_task,
 )
-from .db import all_rows, auth_user, configured, db, event, guest_quota, quota
+from .db import all_rows, auth_user, configured, db, ensure_manager, event, global_quota, guest_quota, quota
 from .mail import digest, send_mail
 from .planner import DEFAULT_SETTINGS, actual_minutes, schedule
 
@@ -38,6 +40,13 @@ bp = Blueprint("api", __name__)
 MAX_BODY = 40_000
 STATUS_LABELS = {"accepted": "Đã tiếp nhận", "waiting": "Chờ phối hợp", "review": "Chờ duyệt", "delivered": "Đã bàn giao"}
 TASK_ROUTE = re.compile(r"^tasks/([0-9a-f-]+)(?:/(events|plan|timer|status|comment|handoff|accept|decline|reopen))?$", re.I)
+
+
+def ai_daily_limit():
+    try:
+        return max(1, int(os.environ.get("AI_DAILY_LIMIT") or 300))
+    except ValueError:
+        return 300
 
 
 def reply(status, value):
@@ -92,6 +101,21 @@ def api(path_route=None):
         return reply(500, {"error": "Có lỗi hệ thống. Vui lòng thử lại."})
 
 
+def own_plans(user):
+    """Plans have no manager column; filter through the parent task (PostgREST inner join)."""
+    rows = all_rows(f"plans?select=*,tasks!inner(manager_id)&tasks.manager_id=eq.{user['id']}")
+    return [{k: v for k, v in p.items() if k != "tasks"} for p in rows]
+
+
+def own_workspace(user):
+    tasks = all_rows(f"tasks?manager_id=eq.{user['id']}&order=created_at.desc")
+    plans = own_plans(user)
+    sessions = all_rows(f"sessions?manager_id=eq.{user['id']}")
+    rows = db(f"settings?manager_id=eq.{user['id']}") or []
+    settings = rows[0]["value"] if rows else DEFAULT_SETTINGS
+    return tasks, plans, sessions, settings
+
+
 def handle(route):
     method = request.method
     if method == "GET" and route == "config":
@@ -114,22 +138,31 @@ def handle(route):
     user = auth_user(request.headers.get("Authorization"))
 
     if method == "GET" and route == "data":
-        owner_filter = "" if user["manager"] else f"requester_id=eq.{user['id']}&"
-        tasks = [strip_secret(t) for t in all_rows(f"tasks?{owner_filter}order=created_at.desc")]
-        if user["manager"]:
-            plans, sessions = all_rows("plans?select=*"), all_rows("sessions?select=*")
-            rows = db(f"settings?manager_id=eq.{user['id']}") or []
-        else:
-            # Requesters never receive plans, time logs, private notes or settings.
-            plans, sessions, rows = [], [], []
-        settings = rows[0]["value"] if rows else DEFAULT_SETTINGS
-        return reply(200, {"user": user, "tasks": tasks, "plans": plans, "sessions": sessions, "settings": settings})
+        profile = ensure_manager(user)
+        tasks, plans, sessions, settings = own_workspace(user)
+        return reply(200, {
+            "user": user, "manager": profile, "tasks": [strip_secret(t) for t in tasks],
+            "plans": plans, "sessions": sessions, "settings": settings,
+        })
+
+    if method == "POST" and route == "profile":
+        slug = valid_slug(b.get("slug"))
+        ensure_manager(user)
+        try:
+            db(f"managers?user_id=eq.{user['id']}", method="PATCH", body={"slug": slug})
+        except HttpError as e:
+            if e.status == 409:
+                raise HttpError(409, "Mã này đã có người dùng. Hãy chọn mã khác.")
+            raise
+        return reply(200, {"ok": True, "slug": slug})
 
     if method == "POST" and route == "tasks":
+        # A manager adding work to their own list.
         quota(user, "requests", 50)
         fields = request_fields(b)
         created = db("tasks", method="POST", body={
             **fields,
+            "manager_id": user["id"],
             "requester_id": user["id"],
             "requester_email": user["email"],
             "requester_name": user["name"],
@@ -140,7 +173,6 @@ def handle(route):
         return reply(201, {"task": task})
 
     if method == "POST" and route == "settings":
-        manager_only(user)
         settings = validate_settings(b)
         db("settings?on_conflict=manager_id", method="POST", body={"manager_id": user["id"], "value": settings},
            headers={"Prefer": "resolution=merge-duplicates,return=representation"})
@@ -154,7 +186,7 @@ def handle(route):
     task_id, action = match.group(1), match.group(2)
     rows = db(f"tasks?id=eq.{task_id}") or []
     task = rows[0] if rows else None
-    # 404 (not 403) so requesters cannot probe which task IDs exist.
+    # 404 (not 403) so other accounts cannot probe which task IDs exist.
     need(task and visible_task(user, task), 404, "Không tìm thấy công việc.")
 
     if method == "GET" and action == "events":
@@ -167,13 +199,14 @@ def handle(route):
         return reply(200, {"ok": True})
 
     if action == "accept":
-        need(task["requester_id"] == user["id"] and task["status"] == "review", 403,
+        need(task.get("requester_id") == user["id"] and task["status"] == "review", 403,
              "Chỉ người giao việc có thể duyệt kết quả đang chờ.")
         db(f"tasks?id=eq.{task['id']}&status=eq.review", method="PATCH", body={"status": "delivered", "updated_at": now_iso()})
         event(task, user, "Đã xác nhận kết quả và hoàn tất bàn giao.")
         return reply(200, {"ok": True})
 
-    manager_only(user)
+    # Everything below changes the plan, time or status: only the owning manager.
+    owner_only(user, task)
 
     if action == "plan":
         estimate = number(b.get("estimate_minutes"), 1, 100000)
@@ -201,7 +234,7 @@ def handle(route):
             plans = db(f"plans?task_id=eq.{task['id']}") or []
             need(plans and task["status"] in ("accepted", "doing"), 409,
                  "Hãy tiếp nhận và xác nhận thời lượng trước khi bắt đầu.")
-        # Atomic in PostgreSQL: only one running timer per manager across tabs/devices.
+        # Atomic in PostgreSQL: one running timer per manager, only on that manager's own tasks.
         db("rpc/timer_change", method="POST", body={"p_manager": user["id"], "p_task": task["id"], "p_action": b["action"]})
         return reply(200, {"ok": True})
 
@@ -218,7 +251,6 @@ def handle(route):
     if action == "decline":
         need(task["status"] not in ("delivered", "declined"), 409, "Không thể từ chối việc đã bàn giao hoặc đã từ chối.")
         reason = text(b.get("reason"), 2000, True)
-        # Atomic in PostgreSQL: stops a running timer on this task and sets status 'declined'.
         db("rpc/task_decline", method="POST", body={"p_manager": user["id"], "p_task": task["id"]})
         event(task, user, f"Đã từ chối yêu cầu. Lý do: {reason}")
         return reply(200, {"ok": True})
@@ -250,6 +282,7 @@ PUBLIC_TASK_FIELDS = (
     "requested_deadline", "committed_deadline", "status", "result", "requester_name", "created_at", "updated_at",
 )
 BAD_LINK = "Đường dẫn theo dõi không hợp lệ hoặc đã hết hiệu lực."
+NO_MANAGER = "Không tìm thấy người quản lý với mã này. Hãy kiểm tra lại đường link hoặc mã."
 
 
 def strip_secret(task):
@@ -278,10 +311,23 @@ def guest_task(b):
     return rows[0]
 
 
+def find_manager(slug_value):
+    slug = slug_value.strip().lower() if isinstance(slug_value, str) else ""
+    need(re.match(r"^[a-z0-9-]{3,40}$", slug), 404, NO_MANAGER)
+    rows = db(f"managers?slug=eq.{slug}&select=user_id,slug,name") or []
+    need(rows, 404, NO_MANAGER)
+    return rows[0]
+
+
 def public_route(route, b):
-    """No sign-in. Submitting creates a request plus a secret tracking token returned exactly once."""
+    """No sign-in. Submitting creates a request for one manager plus a secret tracking token returned once."""
     need(request.method == "POST", 405, "Yêu cầu POST.")
     operation = route[len("public/"):]
+
+    if operation == "manager":
+        guest_quota(client_key(), "guest_lookup", 60, 5000)
+        manager = find_manager(b.get("slug"))
+        return reply(200, {"slug": manager["slug"], "name": manager["name"] or manager["slug"]})
 
     if operation == "tasks":
         # Honeypot: real people never see or fill this field.
@@ -290,10 +336,12 @@ def public_route(route, b):
         email = text(b.get("email"), 254, True)
         need(EMAIL_RE.match(email), 400, "Email không hợp lệ.")
         fields = request_fields(b)
+        manager = find_manager(b.get("manager"))
         guest_quota(client_key(), "guest_requests", 10, 300)
         token = secrets.token_urlsafe(32)
         created = db("tasks", method="POST", body={
             **fields,
+            "manager_id": manager["user_id"],
             "requester_id": None,
             "requester_email": email,
             "requester_name": name,
@@ -302,7 +350,8 @@ def public_route(route, b):
         })
         task = created[0]
         event(task, {"id": None, "name": name}, "Đã gửi yêu cầu mới (không đăng nhập).")
-        return reply(201, {"task": {"id": task["id"], "title": task["title"]}, "token": token})
+        return reply(201, {"task": {"id": task["id"], "title": task["title"]}, "token": token,
+                           "manager": manager["name"] or manager["slug"]})
 
     if operation == "ai":
         guest_quota(client_key(), "guest_ai", 5, 100)
@@ -339,9 +388,8 @@ def public_route(route, b):
 def ai_route(user, b):
     mode = b.get("mode")
     need(mode in ("parse", "estimate", "advice"), 400, "Chế độ AI không hợp lệ.")
-    if mode != "parse":
-        manager_only(user)
-    quota(user, "ai", 50 if user["manager"] else 15)
+    quota(user, "ai", 50)
+    global_quota("ai_total", ai_daily_limit())
     payload = {
         "now": now_iso(),
         "timezone": text(b.get("timezone") or "Asia/Ho_Chi_Minh", 80),
@@ -349,11 +397,8 @@ def ai_route(user, b):
         "mode": mode,
     }
     if mode != "parse":
-        tasks = all_rows("tasks?select=*")
-        plans = all_rows("plans?select=*")
-        sessions = all_rows("sessions?select=*")
-        rows = db(f"settings?manager_id=eq.{user['id']}") or []
-        settings = rows[0]["value"] if rows else DEFAULT_SETTINGS
+        # Only this manager's own workspace is ever sent to the AI.
+        tasks, plans, sessions, settings = own_workspace(user)
         plan_by_task = {p["task_id"]: p for p in plans}
         payload["history"] = [
             {
@@ -377,7 +422,7 @@ def ai_route(user, b):
         if mode == "estimate":
             need(is_uuid(b.get("task_id")), 400, "Mã công việc không hợp lệ.")
             task = next((t for t in tasks if t["id"] == b["task_id"]), None)
-            need(task, 404, "Không tìm thấy công việc.")
+            need(task and owns(user, task), 404, "Không tìm thấy công việc.")
             payload["task"] = {k: task.get(k) for k in ("title", "description", "deliverable", "category", "requested_deadline")}
     return reply(200, {"analysis": ask_ai(mode, payload)})
 
@@ -399,7 +444,7 @@ def auth_route(route, b):
         path = "token?grant_type=password" if operation == "login" else "signup"
         payload = {"email": email, "password": password}
         if operation == "signup":
-            # Only a display name goes into metadata; role is never read from metadata.
+            # Only a display name goes into metadata; permissions never come from metadata.
             payload["data"] = {"name": text(b.get("name") or email, 120)}
     elif operation == "refresh":
         path, payload = "token?grant_type=refresh_token", {"refresh_token": text(b.get("refresh_token"), 4000, True)}
@@ -433,7 +478,7 @@ def auth_route(route, b):
 
 @bp.route("/api/cron", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 def cron():
-    """Daily deadline digest. Fails closed when CRON_SECRET is missing."""
+    """Daily deadline digest to every manager. Fails closed when CRON_SECRET is missing."""
     secret = os.environ.get("CRON_SECRET") or ""
     expected = f"Bearer {secret}".encode()
     actual = (request.headers.get("Authorization") or "").encode()
