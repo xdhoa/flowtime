@@ -35,10 +35,15 @@ create table public.mail_log (key text primary key,provider_id text,created_at t
 grant all on public.tasks,public.plans,public.sessions,public.events,public.settings,public.quotas,public.mail_log to service_role;
 -- Every data operation passes through authenticated server handlers. Clients have NO direct table access.
 -- The service_role key stays on the server. Manager identity is a server-only UUID, never user metadata.
-do $$ declare n text; begin foreach n in array array['tasks','plans','sessions','events','settings','quotas','mail_log'] loop
- execute format('alter table public.%I enable row level security',n);
- execute format('revoke all on table public.%I from anon, authenticated',n);
- end loop; end $$;
+-- Explicit statements (not a loop) so Supabase's SQL Editor recognises that RLS is enabled.
+alter table public.tasks enable row level security;
+alter table public.plans enable row level security;
+alter table public.sessions enable row level security;
+alter table public.events enable row level security;
+alter table public.settings enable row level security;
+alter table public.quotas enable row level security;
+alter table public.mail_log enable row level security;
+revoke all on public.tasks,public.plans,public.sessions,public.events,public.settings,public.quotas,public.mail_log from anon, authenticated;
 
 create function public.consume_quota(p_user uuid,p_kind text,p_limit integer) returns boolean
 language plpgsql security definer set search_path=public as $$
