@@ -38,7 +38,9 @@ function readSaved() { try { return JSON.parse(localStorage.getItem(SAVED)) || [
 function writeSaved(list) { try { localStorage.setItem(SAVED, JSON.stringify(list.slice(0, 30))); } catch {} }
 const mySaved = () => readSaved().filter(x => !!x.demo === isDemo());
 
-const trackLink = token => `${location.origin}/#track=${token}`;
+// Use the public address (APP_URL) so saved links never point at a private preview URL.
+function publicOrigin() { try { return ctx.config.appURL ? new URL(ctx.config.appURL).origin : location.origin; } catch { return location.origin; } }
+const trackLink = token => `${publicOrigin()}/#track=${token}`;
 
 function badge(t) {
   const late = !CLOSED.includes(t.status) && Date.parse(t.committed_deadline || t.requested_deadline) < Date.now();
