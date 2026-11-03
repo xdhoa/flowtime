@@ -1,0 +1,6 @@
+Flask>=3.1,<4
+requests>=2.32,<3
+# IANA time zone data for zoneinfo on Windows (Linux hosts already have it; harmless there).
+tzdata>=2025.2
+# Production WSGI server for Linux hosts (Render etc.). Not used on Windows or Vercel.
+gunicorn>=23,<24; sys_platform != "win32"

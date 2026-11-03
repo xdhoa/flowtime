@@ -1,0 +1,35 @@
+# OPTIONAL alternative to Vercel. Render Blueprint: a Python web service run by gunicorn.
+# Render's web service does not run the daily digest; use .github/workflows/deadline-digest.yml for that.
+services:
+  - type: web
+    name: flowtime
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 2 --timeout 60 --bind 0.0.0.0:$PORT
+    healthCheckPath: /api/index?route=config
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: FLOWTIME_MANAGER_ID
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: MANAGER_EMAIL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4.1-mini
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        sync: false
+      - key: CRON_SECRET
+        sync: false

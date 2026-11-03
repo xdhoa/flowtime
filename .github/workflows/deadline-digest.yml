@@ -1,0 +1,26 @@
+# OPTIONAL: daily deadline digest for hosts without built-in cron (e.g. Render).
+# Not needed on Vercel (vercel.json "crons" already calls /api/cron).
+# Setup: GitHub repo -> Settings -> Secrets and variables -> Actions
+#   Variables: FLOWTIME_URL = https://your-app.example (no trailing slash)
+#   Secrets:   CRON_SECRET  = same value as the server's CRON_SECRET
+# The workflow does nothing while FLOWTIME_URL is unset. Sending is idempotent per day.
+name: Deadline digest
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # 00:00 UTC = 07:00 Vietnam
+  workflow_dispatch:
+
+jobs:
+  digest:
+    if: ${{ vars.FLOWTIME_URL != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /api/cron
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          FLOWTIME_URL: ${{ vars.FLOWTIME_URL }}
+        run: |
+          curl --fail-with-body --silent --show-error --max-time 90 \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            "${FLOWTIME_URL}/api/cron"
