@@ -1,7 +1,7 @@
 // Public (no sign-in) request flow: submit a request, then follow it with a private tracking link.
 // Only the manager signs in. The tracking token lives in the URL fragment (#track=...), which
 // browsers never send to the server in requests or Referer headers.
-import {STATUSES} from './planner.mjs';
+import {STATUSES, CLOSED} from './planner.mjs';
 import {demoGuestAPI} from './demo.mjs';
 
 const $ = id => document.getElementById(id);
@@ -41,8 +41,8 @@ const mySaved = () => readSaved().filter(x => !!x.demo === isDemo());
 const trackLink = token => `${location.origin}/#track=${token}`;
 
 function badge(t) {
-  const late = !['review', 'delivered'].includes(t.status) && Date.parse(t.committed_deadline || t.requested_deadline) < Date.now();
-  return `<span class="badge ${late ? 'red' : t.status === 'delivered' ? 'green' : t.status === 'waiting' ? 'amber' : ''}">${late ? 'Quá hạn · ' : ''}${STATUSES[t.status]}</span>`;
+  const late = !CLOSED.includes(t.status) && Date.parse(t.committed_deadline || t.requested_deadline) < Date.now();
+  return `<span class="badge ${late || t.status === 'declined' ? 'red' : t.status === 'delivered' ? 'green' : t.status === 'waiting' ? 'amber' : ''}">${late ? 'Quá hạn · ' : ''}${STATUSES[t.status]}</span>`;
 }
 
 function shell(content) {

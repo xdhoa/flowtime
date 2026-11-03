@@ -1,4 +1,6 @@
-export const STATUSES={new:'Mới gửi',accepted:'Đã tiếp nhận',doing:'Đang làm',waiting:'Chờ phối hợp',review:'Chờ duyệt',delivered:'Đã bàn giao'};
+export const STATUSES={new:'Mới gửi',accepted:'Đã tiếp nhận',doing:'Đang làm',waiting:'Chờ phối hợp',review:'Chờ duyệt',delivered:'Đã bàn giao',declined:'Đã từ chối'};
+// Statuses that are finished: never overdue, never scheduled, never in "needs attention" counts.
+export const CLOSED=['review','delivered','declined'];
 export const DEFAULT_SETTINGS={timezone:'Asia/Ho_Chi_Minh',weekdays:[1,2,3,4,5],start:9,end:18,lunchStart:12,lunchEnd:13,buffer:15,busy:[]};
 export function actualMinutes(id,sessions,now=Date.now()) {return sessions.filter(s=>s.task_id===id).reduce((n,s)=>n+Math.max(0,((s.ended_at?Date.parse(s.ended_at):now)-Date.parse(s.started_at))/60000),0)}
 const formatters=new Map();

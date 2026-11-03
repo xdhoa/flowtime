@@ -37,7 +37,7 @@ bp = Blueprint("api", __name__)
 
 MAX_BODY = 40_000
 STATUS_LABELS = {"accepted": "Đã tiếp nhận", "waiting": "Chờ phối hợp", "review": "Chờ duyệt", "delivered": "Đã bàn giao"}
-TASK_ROUTE = re.compile(r"^tasks/([0-9a-f-]+)(?:/(events|plan|timer|status|comment|handoff|accept))?$", re.I)
+TASK_ROUTE = re.compile(r"^tasks/([0-9a-f-]+)(?:/(events|plan|timer|status|comment|handoff|accept|decline|reopen))?$", re.I)
 
 
 def reply(status, value):
@@ -213,6 +213,20 @@ def handle(route):
         need(status not in ("review", "delivered") or result.strip(), 400, "Hãy nhập kết quả hoặc đường dẫn bàn giao.")
         db("rpc/task_status", method="POST", body={"p_manager": user["id"], "p_task": task["id"], "p_status": status, "p_result": result})
         event(task, user, f"Đã cập nhật trạng thái: {STATUS_LABELS[status]}.")
+        return reply(200, {"ok": True})
+
+    if action == "decline":
+        need(task["status"] not in ("delivered", "declined"), 409, "Không thể từ chối việc đã bàn giao hoặc đã từ chối.")
+        reason = text(b.get("reason"), 2000, True)
+        # Atomic in PostgreSQL: stops a running timer on this task and sets status 'declined'.
+        db("rpc/task_decline", method="POST", body={"p_manager": user["id"], "p_task": task["id"]})
+        event(task, user, f"Đã từ chối yêu cầu. Lý do: {reason}")
+        return reply(200, {"ok": True})
+
+    if action == "reopen":
+        need(task["status"] == "declined", 409, "Chỉ mở lại được yêu cầu đã từ chối.")
+        db(f"tasks?id=eq.{task['id']}&status=eq.declined", method="PATCH", body={"status": "new", "updated_at": now_iso()})
+        event(task, user, "Đã mở lại yêu cầu để xem xét.")
         return reply(200, {"ok": True})
 
     if action == "handoff":

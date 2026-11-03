@@ -15,6 +15,8 @@ if(action==='plan'){state.plans=state.plans.filter(p=>p.task_id!==task.id);state
 if(action==='timer'){if(body.action==='start'){stop();state.tasks.filter(t=>t.status==='doing').forEach(t=>t.status='accepted');task.status='doing';state.sessions.push({id:uid(),manager_id:state.user.id,task_id:task.id,started_at:new Date().toISOString(),ended_at:null})}else stop(task.id)}
 if(action==='status'){stop(task.id);task.status=body.status;task.result=body.result??task.result;ev('Đã cập nhật trạng thái công việc.');}
 if(action==='accept'){task.status='delivered';ev('Đã xác nhận kết quả và hoàn tất bàn giao.');}
+if(action==='decline'){if(['delivered','declined'].includes(task.status))throw Error('Không thể từ chối việc đã bàn giao hoặc đã từ chối.');if(!body?.reason?.trim())throw Error('Hãy nhập lý do từ chối.');stop(task.id);task.status='declined';ev('Đã từ chối yêu cầu. Lý do: '+body.reason.trim());}
+if(action==='reopen'){if(task.status!=='declined')throw Error('Chỉ mở lại được yêu cầu đã từ chối.');task.status='new';ev('Đã mở lại yêu cầu để xem xét.');}
 if(action==='handoff')throw Error('Demo không gửi email. Bạn có thể sao chép nội dung bàn giao.');task.updated_at=new Date().toISOString();persist();return {ok:true}}
 
 // Demo version of the no-sign-in request flow (public/* routes). Requests land in the same

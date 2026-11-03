@@ -53,7 +53,7 @@ def digest():
     now = time.time() * 1000
     limit = now + 86_400_000
     tasks = db(
-        "tasks?status=not.in.(review,delivered)&requested_deadline=not.is.null"
+        "tasks?status=not.in.(review,delivered,declined)&requested_deadline=not.is.null"
         "&select=id,title,requested_deadline,committed_deadline,status&order=requested_deadline.asc&limit=1000"
     ) or []
     due = [t for t in tasks if to_ms(t.get("committed_deadline") or t["requested_deadline"]) <= limit]

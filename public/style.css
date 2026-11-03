@@ -10,5 +10,6 @@
 .primary-link:hover{background:#4058cf}
 .full-link{display:block;text-align:center;margin-bottom:22px}
 .track-link{display:flex;gap:8px;margin-top:12px}.track-link input{flex:1;min-width:0}
+.danger{color:var(--red);border-color:#efcaca}.danger:hover{background:#fcecec;border-color:var(--red)}
 .hp{position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden}
 @media(max-width:800px){.guest-page{padding:18px 16px 32px}.track-link{flex-direction:column}}
