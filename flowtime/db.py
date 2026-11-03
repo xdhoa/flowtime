@@ -26,11 +26,14 @@ def db(path, method="GET", body=None, headers=None):
     key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
     h = {
         "apikey": key,
-        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
         "Prefer": "return=representation",
         **(headers or {}),
     }
+    # Legacy service_role keys are JWTs and are also sent as Bearer. New-style secret keys
+    # (sb_secret_...) are not JWTs: Supabase wants them ONLY in the apikey header.
+    if key.startswith("eyJ"):
+        h["Authorization"] = f"Bearer {key}"
     r = http.send(
         method,
         f"{os.environ['SUPABASE_URL']}/rest/v1/{path}",
