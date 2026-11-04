@@ -1,15 +1,19 @@
 // Public (no sign-in) request flow: submit a request, then follow it with a private tracking link.
 // Only the manager signs in. The tracking token lives in the URL fragment (#track=...), which
 // browsers never send to the server in requests or Referer headers.
-import {STATUSES, CLOSED} from './planner.mjs';
+import {STATUSES} from './planner.mjs';
 import {demoGuestAPI} from './demo.mjs';
+import {SAVED_KEY, MAX_SAVED, escapeHTML, normalizeSaved, upsertSaved, parseTrackLink, isLate, deadlineOf, summarize, filterItems, sortItems, loadAll} from './requests.mjs';
 
 const $ = id => document.getElementById(id);
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const esc = escapeHTML;
 const fmt = v => v ? new Date(v).toLocaleString('vi-VN', {day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'}) : 'Chưa xác nhận';
 const inputDate = v => { const d = new Date(v || Date.now() + 86400000); return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16); };
 const CATEGORIES = ['Proposal & kế hoạch', 'Truyền thông', 'Sự kiện', 'Nghiên cứu', 'Báo cáo', 'Thiết kế', 'Khác'];
-const SAVED = 'flowtime-my-requests';
+const SAVED = SAVED_KEY;
+// Only these fields of a tracked task are ever rendered in the workspace (mirrors PUBLIC_TASK_FIELDS).
+const PUBLIC_FIELDS = ['id', 'title', 'category', 'requested_deadline', 'committed_deadline', 'status', 'created_at', 'updated_at'];
+const pick = t => t ? Object.fromEntries(PUBLIC_FIELDS.map(k => [k, t[k] ?? null])) : null;
 
 let ctx = {config: {}, toast: () => {}};
 let chat = [];
@@ -34,8 +38,8 @@ async function perform(button, fn) {
 }
 
 // Requests sent from this device, so people can find them again without an account.
-function readSaved() { try { return JSON.parse(localStorage.getItem(SAVED)) || []; } catch { return []; } }
-function writeSaved(list) { try { localStorage.setItem(SAVED, JSON.stringify(list.slice(0, 30))); } catch {} }
+function readSaved() { try { return normalizeSaved(JSON.parse(localStorage.getItem(SAVED))); } catch { return []; } }
+function writeSaved(list) { try { localStorage.setItem(SAVED, JSON.stringify(normalizeSaved(list))); } catch {} }
 const mySaved = () => readSaved().filter(x => !!x.demo === isDemo());
 
 // Use the public address (APP_URL) so saved links never point at a private preview URL.
@@ -43,23 +47,30 @@ function publicOrigin() { try { return ctx.config.appURL ? new URL(ctx.config.ap
 const trackLink = token => `${publicOrigin()}/#track=${token}`;
 
 function badge(t) {
-  const late = !CLOSED.includes(t.status) && Date.parse(t.committed_deadline || t.requested_deadline) < Date.now();
-  return `<span class="badge ${late || t.status === 'declined' ? 'red' : t.status === 'delivered' ? 'green' : t.status === 'waiting' ? 'amber' : ''}">${late ? 'Quá hạn · ' : ''}${STATUSES[t.status]}</span>`;
+  const late = isLate(t);
+  return `<span class="badge ${late || t.status === 'declined' ? 'red' : t.status === 'delivered' ? 'green' : t.status === 'waiting' || t.status === 'review' ? 'amber' : ''}">${late ? 'Quá hạn · ' : ''}${esc(STATUSES[t.status] || t.status)}</span>`;
 }
 
-function shell(content) {
+function shell(content, section = 'request', scroll = true) {
   $('loginView').hidden = true;
   $('appView').hidden = true;
   $('guestView').hidden = false;
   $('guestDemoBanner').hidden = !isDemo();
+  document.querySelectorAll('[data-guest-nav]').forEach(a => {
+    const on = a.dataset.guestNav === section;
+    a.classList.toggle('active', on);
+    if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  });
   $('guestContent').innerHTML = content;
-  window.scrollTo({top: 0});
+  if (scroll) window.scrollTo({top: 0});
 }
 
-// Routes: '#track=<token>' follow a request · '#request/<code>' send to that manager · otherwise ask for the code.
+// Routes: '#track=<token>' follow a request · '#my-requests' everything saved on this device ·
+// '#request/<code>' send to that manager · otherwise ask for the code.
 export function showGuest(hash = '') {
   const token = hash.startsWith('#track=') ? hash.slice(7) : '';
   if (token) return renderTrack(token);
+  if (hash === '#my-requests') return renderWorkspace();
   const code = hash.startsWith('#request/') ? decodeURIComponent(hash.slice(9)).trim().toLowerCase() : '';
   if (code) return openManager(code);
   renderCodeEntry();
@@ -67,8 +78,9 @@ export function showGuest(hash = '') {
 
 function savedHTML(saved) {
   return saved.length
-    ? saved.map(x => `<div class="list-row"><span>${esc(x.title)}<br><small class="caption">${x.manager ? 'Gửi cho ' + esc(x.manager) + ' · ' : ''}${fmt(x.created_at)}</small></span><a href="#track=${esc(x.token)}">Theo dõi →</a></div>`).join('') + '<button type="button" class="link" id="gForget">Xóa danh sách khỏi thiết bị này</button>'
-    : '<p class="help">Chưa có. Đường dẫn theo dõi được lưu tại đây sau khi bạn gửi. Hãy tự lưu lại đường dẫn nếu dùng máy khác.</p>';
+    ? saved.slice(0, 5).map(x => `<div class="list-row"><span>${esc(x.title)}<br><small class="caption">${x.manager ? 'Gửi cho ' + esc(x.manager) + ' · ' : ''}${fmt(x.created_at)}</small></span><a href="#track=${esc(x.token)}">Theo dõi →</a></div>`).join('')
+      + `<div class="actions"><a class="primary-link" href="#my-requests">Xem tất cả (${saved.length}) trong Yêu cầu của tôi →</a><button type="button" class="link" id="gForget">Xóa danh sách khỏi thiết bị này</button></div>`
+    : '<p class="help">Chưa có. Đường dẫn theo dõi được lưu tại đây sau khi bạn gửi. Đã có đường dẫn? <a href="#my-requests">Thêm vào Yêu cầu của tôi</a>.</p>';
 }
 
 function bindForget(rerender) {
@@ -143,7 +155,7 @@ function renderIntake(manager) {
         collaborators: $('gCollab').value, attachment_url: $('gAttachment').value, manager: manager.slug,
       };
       const r = await call('public/tasks', payload);
-      writeSaved([{token: r.token, title: r.task.title, manager: r.manager, created_at: new Date().toISOString(), demo: isDemo()}, ...readSaved()]);
+      writeSaved(upsertSaved(readSaved(), {token: r.token, title: r.task.title, manager: r.manager, created_at: new Date().toISOString(), demo: isDemo()}));
       chat = [];
       renderSent(r.token, r.task.title, r.manager);
     });
@@ -176,7 +188,8 @@ function renderSent(token, title, managerName) {
     <h3>Đường dẫn theo dõi riêng của bạn</h3>
     <p class="help">Lưu lại đường dẫn này để xem tiến độ, trao đổi và duyệt kết quả. Ai có đường dẫn đều xem được yêu cầu, vì vậy chỉ chia sẻ với người liên quan. Đường dẫn cũng được lưu trên trình duyệt này.</p>
     <div class="track-link"><input id="gLink" readonly value="${esc(link)}" aria-label="Đường dẫn theo dõi"><button id="gCopy" type="button">Sao chép</button></div>
-    <div class="actions"><a class="primary-link" href="#track=${esc(token)}">Mở trang theo dõi →</a><a href="${esc(location.hash || '#request')}" id="gAnother">Gửi yêu cầu khác</a></div>
+    <div class="actions"><a class="primary-link" href="#track=${esc(token)}">Mở trang theo dõi →</a><a class="secondary-link" href="#my-requests">Xem tất cả yêu cầu của tôi</a><a href="${esc(location.hash || '#request')}" id="gAnother">Gửi yêu cầu khác</a></div>
+    <p class="help">Đã lưu vào <b>Yêu cầu của tôi</b> trên trình duyệt này (${mySaved().length}/${MAX_SAVED}). Dùng máy khác? Dán đường dẫn trên vào mục “Thêm đường dẫn theo dõi”.</p>
   </div></section>`);
   // The address is unchanged after submitting, so clicking a same-address link would do nothing.
   $('gAnother').onclick = e => { e.preventDefault(); showGuest(location.hash); };
@@ -184,16 +197,20 @@ function renderSent(token, title, managerName) {
 }
 
 async function renderTrack(token) {
-  shell('<div class="loading">Đang tải yêu cầu…</div>');
+  shell('<div class="loading">Đang tải yêu cầu…</div>', 'my-requests');
   let data;
   try {
     data = await call('public/track', {token});
   } catch (e) {
-    shell(`<div class="errorbox">${esc(e.message)}</div><a href="#request">← Gửi yêu cầu mới</a>`);
+    shell(`<div class="errorbox">${esc(e.message)}</div><div class="actions"><a href="#my-requests">← Yêu cầu của tôi</a><a href="#request">Gửi yêu cầu mới</a></div>`, 'my-requests');
     return;
   }
   const t = data.task;
-  shell(`<section class="page-heading"><div><span class="eyebrow">THEO DÕI YÊU CẦU</span><h1>${esc(t.title)}</h1><p>Gửi bởi ${esc(t.requester_name)} · ${fmt(t.created_at)}</p></div><a href="#request">+ Gửi yêu cầu khác</a></section>
+  const saved = readSaved().find(x => x.token === token);
+  // Keep the saved title current; shape and other fields stay as they were.
+  if (saved && t.title && saved.title !== t.title) writeSaved(upsertSaved(readSaved(), {token, title: t.title}));
+  shell(`<p class="crumb"><a href="#my-requests">← Yêu cầu của tôi</a></p><section class="page-heading"><div><span class="eyebrow">THEO DÕI YÊU CẦU</span><h1>${esc(t.title)}</h1><p>Gửi bởi ${esc(t.requester_name)} · ${fmt(t.created_at)}</p></div><div class="actions">${saved ? '' : '<button type="button" id="gSaveThis">Lưu vào Yêu cầu của tôi</button>'}<a href="#request">+ Gửi yêu cầu khác</a></div></section>
+  ${t.status === 'review' ? '<div class="notice-ok"><b>Kết quả đã sẵn sàng.</b> Hãy xem phần “Kết quả bàn giao” và xác nhận hoàn tất, hoặc gửi phản hồi nếu cần chỉnh sửa.</div>' : ''}
   <div class="details-grid"><section>
     <div class="detail-section">${badge(t)}<dl><dt>Hạn mong muốn</dt><dd>${fmt(t.requested_deadline)}</dd><dt>Hạn cam kết</dt><dd>${fmt(t.committed_deadline)}</dd><dt>Loại việc</dt><dd>${esc(t.category)}</dd><dt>Phối hợp</dt><dd>${esc(t.collaborators || 'Chưa nhập')}</dd></dl>
       <h3>Mô tả</h3><p>${esc(t.description || 'Chưa có mô tả.')}</p><h3>Kết quả mong muốn</h3><p>${esc(t.deliverable || 'Chưa nhập.')}</p>
@@ -204,7 +221,97 @@ async function renderTrack(token) {
     <div>${data.events.map(e => `<div class="event"><strong>${esc(e.actor_name)}</strong><time>${fmt(e.created_at)}</time><p>${esc(e.body)}</p></div>`).join('')}</div>
     <form id="gCommentForm"><label for="gComment">Bổ sung / phản hồi / đề nghị đổi deadline</label><textarea id="gComment" maxlength="4000" required placeholder="Nhập nội dung trao đổi…"></textarea><button type="submit" class="full">Gửi trao đổi</button></form>
     <p class="help">Deadline cam kết do quản lý xác nhận. Muốn đổi deadline hoặc phạm vi, hãy gửi trao đổi ở đây.</p>
-  </section></div>`);
+  </section></div>`, 'my-requests');
   $('gCommentForm').onsubmit = e => { e.preventDefault(); perform(e.submitter, async () => { await call('public/comment', {token, body: $('gComment').value}); await renderTrack(token); ctx.toast('Đã gửi trao đổi.'); }); };
   if ($('gAccept')) $('gAccept').onclick = e => perform(e.currentTarget, async () => { await call('public/accept', {token}); await renderTrack(token); ctx.toast('Đã xác nhận kết quả. Cảm ơn bạn!'); });
+  if ($('gSaveThis')) $('gSaveThis').onclick = () => {
+    if (readSaved().length >= MAX_SAVED) { ctx.toast(`Đã đạt tối đa ${MAX_SAVED} yêu cầu trên thiết bị này. Hãy gỡ bớt trong Yêu cầu của tôi.`); return; }
+    writeSaved(upsertSaved(readSaved(), {token, title: t.title, manager: '', created_at: t.created_at, demo: isDemo()}));
+    $('gSaveThis').remove();
+    ctx.toast('Đã lưu vào Yêu cầu của tôi trên trình duyệt này.');
+  };
 }
+
+// ---- Requester workspace (#my-requests): every request saved on THIS browser, in one place. ----
+let ws = {items: [], query: '', group: 'all'};
+const GROUPS = [['all', 'Tất cả'], ['active', 'Đang thực hiện'], ['review', 'Chờ bạn duyệt'], ['late', 'Quá hạn'], ['done', 'Đã hoàn tất'], ['declined', 'Đã từ chối'], ['unavailable', 'Không tải được']];
+
+function trustedOrigins() { return [publicOrigin(), location.origin]; }
+
+async function renderWorkspace() {
+  const saved = mySaved();
+  shell('<div class="loading">Đang tải các yêu cầu đã lưu…</div>', 'my-requests');
+  ws.items = await loadAll(saved, async token => ({task: pick((await call('public/track', {token})).task)}));
+  if (location.hash !== '#my-requests') return; // user navigated away while loading
+  drawWorkspace();
+}
+
+function statCard(label, value, sub, group) {
+  return `<button type="button" class="stat stat-btn${ws.group === group ? ' active' : ''}" data-ws-group="${group}" aria-pressed="${ws.group === group}"><span>${label}</span><strong>${value}</strong><small>${sub}</small></button>`;
+}
+
+function rowHTML(it) {
+  const t = it.task, s = it.saved;
+  if (!t) return `<article class="ws-row unavailable"><div class="ws-main"><b>${esc(s.title || 'Yêu cầu không xác định')}</b><div class="task-meta">${s.manager ? 'Gửi cho ' + esc(s.manager) + ' · ' : ''}${esc(it.error || 'Không tải được.')}</div></div><div class="ws-side"><span class="badge red">Không tải được</span><button type="button" class="link" data-ws-remove="${esc(s.token)}">Gỡ khỏi thiết bị</button></div></article>`;
+  const late = isLate(t);
+  return `<article class="ws-row${late ? ' late' : ''}${t.status === 'review' ? ' review' : ''}"><div class="ws-main"><a class="ws-title" href="#track=${esc(s.token)}">${esc(t.title || s.title)}</a>
+    <div class="task-meta">${s.manager ? 'Quản lý: ' + esc(s.manager) : 'Quản lý: chưa rõ'} · ${esc(t.category || 'Khác')}<br>◷ ${t.committed_deadline ? 'Hạn cam kết' : 'Hạn mong muốn'}: ${fmt(deadlineOf(t))}${late ? ' · <b class="late-text">Đã quá hạn</b>' : ''}</div></div>
+    <div class="ws-side">${badge(t)}<a class="${t.status === 'review' ? 'primary-link' : 'secondary-link'}" href="#track=${esc(s.token)}">${t.status === 'review' ? 'Xem & duyệt →' : 'Xem chi tiết →'}</a><button type="button" class="link" data-ws-remove="${esc(s.token)}">Gỡ</button></div></article>`;
+}
+
+function listHTML() {
+  if (!ws.items.length) return '';
+  const shown = sortItems(filterItems(ws.items, ws));
+  return shown.map(rowHTML).join('') || '<div class="empty"><b>Không có yêu cầu phù hợp</b>Thử đổi bộ lọc hoặc từ khóa tìm kiếm.</div>';
+}
+
+function drawWorkspace(scroll = true) {
+  const s = summarize(ws.items);
+  const count = ws.items.length;
+  shell(`<section class="page-heading"><div><span class="eyebrow">KHÔNG CẦN TÀI KHOẢN</span><h1>Yêu cầu của tôi</h1><p>Tất cả yêu cầu đã lưu trên <b>trình duyệt này</b>. Danh sách không đồng bộ sang thiết bị khác; hãy dán đường dẫn theo dõi để thêm.</p></div><div class="actions"><a class="primary-link" href="#request">+ Gửi yêu cầu mới</a><button type="button" id="wsReload">↻ Làm mới</button></div></section>
+  ${count ? `<div class="stats">${statCard('Tổng yêu cầu', s.total, `Đã lưu ${count}/${MAX_SAVED}`, 'all')}${statCard('Đang thực hiện', s.active, s.late ? `${s.late} việc quá hạn` : 'Mới gửi, tiếp nhận, đang làm', 'active')}${statCard('Chờ bạn duyệt', s.review, 'Kết quả đã sẵn sàng', 'review')}${statCard('Đã hoàn tất', s.done, 'Đã bàn giao', 'done')}</div>` : ''}
+  <div class="ws-grid"><section class="panel"><div class="panel-head"><h2 id="wsCount">${count ? 'Danh sách yêu cầu' : 'Chưa có yêu cầu nào trên thiết bị này'}</h2>
+    ${count ? `<div class="toolbar"><label class="sr-only" for="wsSearch">Tìm kiếm</label><input id="wsSearch" type="search" placeholder="Tìm theo tên việc, quản lý…" value="${esc(ws.query)}"><label class="sr-only" for="wsFilter">Lọc trạng thái</label><select id="wsFilter">${GROUPS.map(([v, l]) => `<option value="${v}"${v === ws.group ? ' selected' : ''}>${l}</option>`).join('')}</select></div>` : ''}</div>
+    <div id="wsList">${count ? listHTML() : `<div class="empty"><b>Bắt đầu bằng một yêu cầu</b>Sau khi bạn gửi yêu cầu, đường dẫn theo dõi riêng sẽ tự lưu ở đây để bạn xem tiến độ, trao đổi và duyệt kết quả.<div class="actions center"><a class="primary-link" href="#request">Gửi yêu cầu đầu tiên →</a></div></div>`}</div></section>
+  <div class="stack"><section class="panel"><div class="panel-head"><h2>Thêm đường dẫn theo dõi</h2></div><form id="wsAddForm" class="panel-body"><label for="wsLink">Dán đường dẫn đã nhận (dạng ${esc(publicOrigin())}/#track=…)</label><input id="wsLink" required autocomplete="off" spellcheck="false" placeholder="${esc(publicOrigin())}/#track=…"><p id="wsAddError" class="field-error" role="alert" hidden></p><button class="primary full" type="submit">Kiểm tra & thêm</button><p class="help">Đường dẫn được kiểm tra với Flowtime trước khi lưu. Chỉ lưu trên trình duyệt này, tối đa ${MAX_SAVED} yêu cầu.</p></form></section>
+    <section class="panel"><div class="panel-body"><h3>Quyền riêng tư</h3><p class="help">Mỗi đường dẫn theo dõi là một khóa bí mật: ai có nó đều xem được yêu cầu. Không chia sẻ công khai. Dùng máy chung? Hãy xóa danh sách sau khi dùng.</p>${count ? '<button type="button" class="link" id="gForget">Xóa toàn bộ danh sách khỏi thiết bị này</button>' : ''}</div></section></div></div>`, 'my-requests', scroll);
+  bindWorkspace();
+}
+
+function drawList() { if ($('wsList')) $('wsList').innerHTML = listHTML(); }
+
+function bindWorkspace() {
+  if ($('wsSearch')) $('wsSearch').oninput = e => { ws.query = e.target.value; drawList(); };
+  if ($('wsFilter')) $('wsFilter').onchange = e => { ws.group = e.target.value; drawWorkspaceKeepFocus('wsFilter'); };
+  document.querySelectorAll('[data-ws-group]').forEach(b => b.onclick = () => { ws.group = ws.group === b.dataset.wsGroup ? 'all' : b.dataset.wsGroup; drawWorkspaceKeepFocus(); });
+  $('wsReload').onclick = e => perform(e.currentTarget, renderWorkspace);
+  $('wsList').onclick = e => {
+    const b = e.target.closest('[data-ws-remove]');
+    if (!b || !confirm('Gỡ yêu cầu này khỏi danh sách trên thiết bị? Yêu cầu vẫn tồn tại; bạn cần đường dẫn để mở lại.')) return;
+    const token = b.dataset.wsRemove;
+    writeSaved(readSaved().filter(x => x.token !== token));
+    ws.items = ws.items.filter(it => it.saved.token !== token);
+    drawWorkspace(false);
+  };
+  bindForget(() => { ws.items = []; drawWorkspace(); });
+  $('wsAddForm').onsubmit = e => {
+    e.preventDefault();
+    const err = $('wsAddError');
+    const fail = msg => { err.textContent = msg; err.hidden = false; $('wsLink').setAttribute('aria-invalid', 'true'); $('wsLink').focus(); };
+    err.hidden = true; $('wsLink').removeAttribute('aria-invalid');
+    const parsed = parseTrackLink($('wsLink').value, trustedOrigins());
+    if (parsed.error) return fail(parsed.error);
+    if (mySaved().some(x => x.token === parsed.token)) return fail('Yêu cầu này đã có trong danh sách.');
+    if (readSaved().length >= MAX_SAVED) return fail(`Đã đạt tối đa ${MAX_SAVED} yêu cầu. Hãy gỡ bớt yêu cầu cũ trước.`);
+    perform(e.submitter, async () => {
+      let task;
+      try { task = pick((await call('public/track', {token: parsed.token})).task); } catch (x) { fail(x.message || 'Không kiểm tra được đường dẫn.'); return; }
+      writeSaved(upsertSaved(readSaved(), {token: parsed.token, title: task.title, manager: '', created_at: task.created_at, demo: isDemo()}));
+      ws.items = [{saved: mySaved().find(x => x.token === parsed.token), task, error: ''}, ...ws.items];
+      drawWorkspace();
+      ctx.toast('Đã thêm vào Yêu cầu của tôi.');
+    });
+  };
+}
+
+function drawWorkspaceKeepFocus(id) { drawWorkspace(false); if (id && $(id)) $(id).focus(); }

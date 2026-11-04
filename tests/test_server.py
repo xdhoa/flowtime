@@ -14,6 +14,7 @@ def unconfigured(monkeypatch):
 
 @pytest.mark.parametrize("path,mime", [("/", "text/html"), ("/app.js", "text/javascript"),
                                        ("/planner.mjs", "text/javascript"), ("/demo.mjs", "text/javascript"),
+                                       ("/guest.mjs", "text/javascript"), ("/requests.mjs", "text/javascript"),
                                        ("/style.css", "text/css")])
 def test_static_files_load_with_correct_types(client, unconfigured, path, mime):
     r = client.get(path)
