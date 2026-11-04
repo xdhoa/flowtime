@@ -15,7 +15,8 @@ def unconfigured(monkeypatch):
 @pytest.mark.parametrize("path,mime", [("/", "text/html"), ("/app.js", "text/javascript"),
                                        ("/planner.mjs", "text/javascript"), ("/demo.mjs", "text/javascript"),
                                        ("/guest.mjs", "text/javascript"), ("/requests.mjs", "text/javascript"),
-                                       ("/style.css", "text/css")])
+                                       ("/style.css", "text/css"), ("/guide.html", "text/html"),
+                                       ("/guide.css", "text/css")])
 def test_static_files_load_with_correct_types(client, unconfigured, path, mime):
     r = client.get(path)
     assert r.status_code == 200
@@ -23,6 +24,23 @@ def test_static_files_load_with_correct_types(client, unconfigured, path, mime):
     assert len(r.data) > 100
     assert r.headers["X-Content-Type-Options"] == "nosniff"
     assert "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]
+
+
+def test_public_guide_links_both_roles_and_download(client, unconfigured):
+    home = client.get("/").get_data(as_text=True)
+    guide = client.get("/guide.html").get_data(as_text=True)
+    assert '/guide.html#requester' in home
+    assert '/guide.html#manager' in home
+    assert 'id="requester"' in guide and 'id="manager"' in guide
+    assert 'flowtime-user-guide.pdf' in guide
+
+
+def test_public_guide_pdf_download(client, unconfigured):
+    pdf = client.get("/flowtime-user-guide.pdf")
+    assert pdf.status_code == 200
+    assert pdf.mimetype == "application/pdf"
+    assert pdf.data.startswith(b"%PDF-")
+    assert len(pdf.data) > 10_000
 
 
 def test_unconfigured_server_fails_closed(client, unconfigured):
